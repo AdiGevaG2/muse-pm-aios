@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "outputStyle": "Concise",
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(*)",
+      "Bash(bash scripts/test-hooks)",
+      "Bash(bash scripts/test-hooks *)",
+      "Bash(scripts/test-hooks)",
+      "Bash(scripts/test-hooks *)",
+      "Bash(bash scripts/validate-ai-readiness)",
+      "Bash(bash scripts/validate-ai-readiness *)",
+      "Bash(scripts/validate-ai-readiness)",
+      "Bash(scripts/validate-ai-readiness *)",
+      "Bash(bash scripts/validate-workspace)",
+      "Bash(bash scripts/validate-workspace *)",
+      "Bash(scripts/validate-workspace)",
+      "Bash(scripts/validate-workspace *)",
+      "Bash(bash scripts/validate-spec)",
+      "Bash(bash scripts/validate-spec *)",
+      "Bash(scripts/validate-spec)",
+      "Bash(scripts/validate-spec *)",
+      "Bash(bash scripts/verify-scope)",
+      "Bash(bash scripts/verify-scope *)",
+      "Bash(scripts/verify-scope)",
+      "Bash(scripts/verify-scope *)",
+      "Bash(bash scripts/measure-template-cost)",
+      "Bash(bash scripts/measure-template-cost *)",
+      "Bash(scripts/measure-template-cost)",
+      "Bash(scripts/measure-template-cost *)",
+      "Bash(python3 scripts/gen-test-hooks.py *)",
+      "Bash(python3 scripts/drawio_to_mermaid.py *)",
+      "Bash(python3 scripts/mermaid_to_drawio.py *)",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "TodoWrite",
+      "Task",
+      "Edit(//tmp/**)",
+      "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql",
+      "mcp__claude_ai_Atlassian__getContentFormatGuide",
+      "mcp__claude_ai_Atlassian__getJiraIssue",
+      "mcp__claude_ai_Atlassian__getVisibleJiraProjects",
+      "mcp__claude_ai_Atlassian__getJiraIssueTypeMetaWithFields",
+      "mcp__claude_ai_Atlassian__getJiraProjectIssueTypesMetadata",
+      "mcp__claude_ai_Atlassian__getTransitionsForJiraIssue",
+      "mcp__claude_ai_Atlassian__getJiraIssueRemoteIssueLinks",
+      "mcp__claude_ai_Atlassian__getIssueLinkTypes",
+      "mcp__claude_ai_Atlassian__lookupJiraAccountId",
+      "mcp__claude_ai_Atlassian__getConfluencePage",
+      "mcp__claude_ai_Atlassian__getConfluencePageDescendants",
+      "mcp__claude_ai_Atlassian__getConfluencePageFooterComments",
+      "mcp__claude_ai_Atlassian__getConfluencePageInlineComments",
+      "mcp__claude_ai_Atlassian__getConfluenceCommentChildren",
+      "mcp__claude_ai_Atlassian__getConfluenceSpaces",
+      "mcp__claude_ai_Atlassian__getPagesInConfluenceSpace",
+      "mcp__claude_ai_Atlassian__searchConfluenceUsingCql",
+      "mcp__claude_ai_Atlassian__search",
+      "mcp__claude_ai_Atlassian__getAccessibleAtlassianResources",
+      "mcp__claude_ai_Atlassian__atlassianUserInfo",
+      "mcp__claude_ai_Atlassian__getCompassComponent",
+      "mcp__claude_ai_Atlassian__getCompassComponents",
+      "mcp__claude_ai_Atlassian__getTeamworkGraphContext",
+      "mcp__claude_ai_Atlassian__getTeamworkGraphObject",
+      "mcp__claude_ai_Slack__slack_search_public_and_private",
+      "mcp__mixpanel__Run-Query",
+      "mcp__claude_ai_monday_com__get_board_items_page"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/destructive-operation-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/ask-gate-guard.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/prd-change-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/provenance-guard.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "promptCacheTtl": "1h",
+  "subagentPromptCacheTtl": "1h"
+}

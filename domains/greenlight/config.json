@@ -1,0 +1,50 @@
+{
+  "_comment": "Standing setup answers for this domain. Skills read this instead of re-asking every run. First-run setup fills the blanks; edit here to change. Empty scaffold — this workspace has no accumulated brain content or verified tool connections yet.",
+  "domain": "greenlight",
+  "feature_defaults": {
+    "naming": "kebab-case",
+    "outputs_root": "outputs/<feature-name>/"
+  },
+  "voice": {
+    "reference": "second-brain/writing-samples.md",
+    "banned_words": []
+  },
+  "tools": {
+    "mixpanel": {
+      "readiness": "UNVERIFIED"
+    },
+    "coralogix": {
+      "readiness": "UNVERIFIED"
+    },
+    "jira": {
+      "readiness": "UNVERIFIED",
+      "requires_explicit_approval": true
+    },
+    "confluence": {
+      "readiness": "UNVERIFIED",
+      "requires_explicit_approval": true
+    },
+    "figma": {
+      "readiness": "UNVERIFIED",
+      "requires_explicit_approval": true
+    },
+    "looker": {
+      "readiness": "NOT_CONNECTED"
+    },
+    "github": {
+      "readiness": "UNVERIFIED",
+      "repo": "https://github.com/g2webservices/greenlight",
+      "purpose": "URL confirmed; access grant still pending — see ../../docs/github-setup.md"
+    }
+  },
+  "security": {
+    "credentials": "Never store API keys, service account credentials, session cookies, or access tokens in repo files, markdown artifacts, prompts, Jira, Confluence, or chat. Use environment variables, local secret storage, or the workspace's MCP credential mechanism. If a required credential is missing, ask the user to configure it locally — never ask for the secret value in chat."
+  },
+  "gates": {
+    "discovery_approval": true,
+    "jira_confluence_approval": true,
+    "brain_write_approval": true,
+    "figma_or_design_followup_approval": true,
+    "major_artifact_write_requires_approval": true
+  }
+}

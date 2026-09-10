@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: scripts/validate-spec <path-to-spec.md>" >&2
+  exit 2
+fi
+
+spec_file="$1"
+if [[ ! -f "$spec_file" ]]; then
+  echo "missing spec file: $spec_file" >&2
+  exit 1
+fi
+
+tmp_ids="$(mktemp)"
+trap 'rm -f "$tmp_ids"' EXIT
+
+grep -Eo '^#{0,6}[[:space:]]*(REQ|AC|DEC|SC|IU)-[0-9]{2,4}\b' "$spec_file" | sed -E 's/^#{0,6}[[:space:]]*//' | sort > "$tmp_ids" || true
+
+duplicate_ids="$(uniq -d "$tmp_ids")"
+if [[ -n "$duplicate_ids" ]]; then
+  echo "duplicate stable IDs found:" >&2
+  echo "$duplicate_ids" >&2
+  exit 1
+fi
+
+open_markers="$(grep -En 'TBD|NEEDS CLARIFICATION|PM decision: Pending' "$spec_file" || true)"
+if [[ -n "$open_markers" ]]; then
+  echo "open markers found:"
+  echo "$open_markers"
+else
+  echo "validate-spec: OK"
+fi

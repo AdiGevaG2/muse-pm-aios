@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  echo "usage:" >&2
+  echo "  scripts/verify-scope snapshot <manifest>" >&2
+  echo "  scripts/verify-scope check <manifest> <approved-paths>" >&2
+  exit 2
+}
+
+require_tool() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Verification limitation: required tool '$1' is unavailable; exact changed-file checking was not performed." >&2
+    exit 2
+  fi
+}
+
+snapshot() {
+  local output="$1"
+  local temporary
+  temporary="$(mktemp)"
+  trap 'rm -f "$temporary"' RETURN
+
+  require_tool shasum
+  find "$repo_root" -type f ! -path "$repo_root/.git/*" -print0 \
+    | LC_ALL=C sort -z \
+    | while IFS= read -r -d '' file; do
+        hash="$(shasum -a 256 "$file" | awk '{print $1}')"
+        printf '%s\t%s\n' "${file#"$repo_root/"}" "$hash"
+      done > "$temporary"
+  mv "$temporary" "$output"
+  trap - RETURN
+  echo "scope snapshot: $output"
+}
+
+print_list() {
+  local title="$1"
+  local file="$2"
+  echo "$title:"
+  if [[ -s "$file" ]]; then
+    sed 's/^/  - /' "$file"
+  else
+    echo "  - (none)"
+  fi
+}
+
+check_scope() {
+  local baseline="$1"
+  local approved="$2"
+  local current changed normalized expected missing unexpected
+
+  if [[ ! -f "$baseline" || ! -f "$approved" ]]; then
+    echo "Verification limitation: baseline or approved-scope file is missing; exact changed-file checking was not performed." >&2
+    exit 2
+  fi
+
+  current="$(mktemp)"
+  changed="$(mktemp)"
+  normalized="$(mktemp)"
+  expected="$(mktemp)"
+  missing="$(mktemp)"
+  unexpected="$(mktemp)"
+  trap 'rm -f "$current" "$changed" "$normalized" "$expected" "$missing" "$unexpected"' RETURN
+
+  snapshot "$current" >/dev/null
+  awk -F '\t' '
+    NR == FNR { before[$1] = $2; next }
+    { after[$1] = $2 }
+    END {
+      for (path in before) {
+        if (!(path in after) || before[path] != after[path]) print path
+      }
+      for (path in after) {
+        if (!(path in before)) print path
+      }
+    }
+  ' "$baseline" "$current" | LC_ALL=C sort -u > "$changed"
+
+  sed -e 's#^\./##' -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*#/d' "$approved" \
+    | LC_ALL=C sort -u > "$normalized"
+
+  comm -12 "$normalized" "$changed" > "$expected"
+  comm -23 "$normalized" "$changed" > "$missing"
+  comm -13 "$normalized" "$changed" > "$unexpected"
+
+  print_list "Expected changes" "$expected"
+  print_list "Missing changes" "$missing"
+  print_list "Unexpected changes" "$unexpected"
+  echo "Verification limitation: checksum comparison detects file content, addition, and deletion changes since the snapshot; it does not prove conversational approval or provide a line-level diff."
+
+  if [[ -s "$missing" || -s "$unexpected" ]]; then
+    return 1
+  fi
+}
+
+[[ $# -ge 1 ]] || usage
+case "$1" in
+  snapshot)
+    [[ $# -eq 2 ]] || usage
+    snapshot "$2"
+    ;;
+  check)
+    [[ $# -eq 3 ]] || usage
+    check_scope "$2" "$3"
+    ;;
+  *)
+    usage
+    ;;
+esac

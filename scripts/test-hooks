@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Proves the hooks actually fire against real Claude Code payload shapes.
+# Run after any hook or settings.json change. Exit 0 = all guards behave.
+#
+# Why this exists: the previous hooks read a TOOL_INPUT_PATH env var that
+# Claude Code never sets, and exited 0 on empty input -- so they passed
+# everything silently while appearing configured. Untested guards are theatre.
+#
+# Test vectors are base64-encoded so that running this suite does not trip
+# the guards under test.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+H=".claude/hooks"; pass=0; fail=0
+d() { printf %s "$1" | base64 --decode; }
+
+FX_AWS="YXdzX2FjY2Vzc19rZXlfaWQgPSBBS0lBSU9TRk9ETk43RVhBTVBMRQ=="
+FX_ANT="a2V5OiBzay1hbnQtYXBpMDMtYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4"
+FX_PW="cGFzc3dvcmQgPSBodW50ZXIyaHVudGVyMmh1bnRlcjJodW50ZXIy"
+FX_GHPAT="Z2l0aHViX3BhdF8xMUFCQ0RFRkcwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw"
+FX_SLACK="dG9rZW4gPSB4b3hiLTEyMzQ1Njc4OTAxMi1hYmNkZWZnaGlqa2w="
+FX_JWT="ZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lJeE1qTTBOVFkzT0Rrd0luMC5kQmpmdEplWjRDVlBtQjkySzI3dWhiVUpVMXAxci13VzFnRldGT0VqWGs="
+
+check() { # name expected_exit payload script
+  local name="$1" want="$2" payload="$3" script="$4" out got
+  out="$(printf %s "$payload" | bash "$script" 2>&1)"; got=$?
+  if [[ "$got" == "$want" ]]; then
+    printf "  PASS  %-52s (exit %s)\n" "$name" "$got"; pass=$((pass+1))
+  else
+    printf "  FAIL  %-52s want %s got %s\n" "$name" "$want" "$got"
+    printf "        output: %s\n" "$(printf %s "$out" | head -2 | tr "\n" " ")"; fail=$((fail+1))
+  fi
+}
+
+bash_payload() { jq -nc --arg c "$(d "$1")" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c}}'; }
+write_payload() { jq -nc --arg t "$(d "$1")" '{hook_event_name:"PreToolUse",tool_name:"Write",tool_input:{file_path:"/tmp/hooktest.md",file_text:$t}}'; }
+
+notify_check() { # name payload want(yes|no)
+  local name="$1" payload="$2" want="$3" out
+  out="$(printf %s "$payload" | bash "$H/prd-change-guard.sh" 2>&1)"
+  if [[ "$want" == "yes" ]]; then
+    if printf %s "$out" | grep -q "Product intent moved"; then
+      printf "  PASS  %-52s (notified)\n" "$name"; pass=$((pass+1))
+    else printf "  FAIL  %-52s (stayed silent)\n" "$name"; fail=$((fail+1)); fi
+  else
+    if [[ -z "$out" ]]; then printf "  PASS  %-52s (silent)\n" "$name"; pass=$((pass+1))
+    else printf "  FAIL  %-52s (spoke when it should not)\n" "$name"; fail=$((fail+1)); fi
+  fi
+}
+
+echo "secret-guard - BLOCK (2) on credentials, PASS (0) on clean prose"
+check "Write: cloud access key in file_text" 2 "$(write_payload "$FX_AWS")" "$H/secret-guard.sh"
+check "Write: vendor api key in file_text"   2 "$(write_payload "$FX_ANT")" "$H/secret-guard.sh"
+check "Write: JWT-shaped string"             2 "$(write_payload "$FX_JWT")" "$H/secret-guard.sh"
+check "Edit: secret in edits[].new_str" 2 "$(jq -nc --arg t "$(d "$FX_PW")" '{hook_event_name:"PreToolUse",tool_name:"Edit",tool_input:{file_path:"/tmp/hooktest.md",edits:[{old_str:"x",new_str:$t}]}}')" "$H/secret-guard.sh"
+check "Edit: secret in legacy new_string" 2 "$(jq -nc --arg t "$(d "$FX_GHPAT")" '{hook_event_name:"PreToolUse",tool_name:"Edit",tool_input:{file_path:"/tmp/hooktest.md",old_string:"x",new_string:$t}}')" "$H/secret-guard.sh"
+check "NotebookEdit: secret in cell content" 2 "$(jq -nc --arg t "$(d "$FX_SLACK")" '{hook_event_name:"PreToolUse",tool_name:"NotebookEdit",tool_input:{notebook_path:"/tmp/h.ipynb",notebook_edits:[{content:$t}]}}')" "$H/secret-guard.sh"
+check "Write: clean PM prose" 0 '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/hooktest.md","file_text":"# PRD. Good PRDs cite evidence, they do not assert."}}' "$H/secret-guard.sh"
+check "FAIL-CLOSED: empty stdin"    2 "" "$H/secret-guard.sh"
+check "FAIL-CLOSED: malformed JSON" 2 "not json at all" "$H/secret-guard.sh"
+
+echo
+echo "destructive-operation-guard - BLOCK (2) irreversible, ALLOW (0) safe"
+check "block: $(d "cm0gLXJmIC90bXAveA==")" 2 "$(bash_payload "cm0gLXJmIC90bXAveA==")" "$H/destructive-operation-guard.sh"
+check "block: $(d "c3VkbyBybSAtZnIgfi9kYXRh")" 2 "$(bash_payload "c3VkbyBybSAtZnIgfi9kYXRh")" "$H/destructive-operation-guard.sh"
+check "block: $(d "Z2l0IHJlc2V0IC0taGFyZCBIRUFEfjM=")" 2 "$(bash_payload "Z2l0IHJlc2V0IC0taGFyZCBIRUFEfjM=")" "$H/destructive-operation-guard.sh"
+check "block: $(d "Z2l0IHB1c2ggLS1mb3JjZSBvcmlnaW4gbWFpbg==")" 2 "$(bash_payload "Z2l0IHB1c2ggLS1mb3JjZSBvcmlnaW4gbWFpbg==")" "$H/destructive-operation-guard.sh"
+check "block: $(d "Z2l0IHB1c2ggLWY=")" 2 "$(bash_payload "Z2l0IHB1c2ggLWY=")" "$H/destructive-operation-guard.sh"
+check "block: $(d "Z2l0IGNsZWFuIC1mZA==")" 2 "$(bash_payload "Z2l0IGNsZWFuIC1mZA==")" "$H/destructive-operation-guard.sh"
+check "block: $(d "Z2l0IGNoZWNrb3V0IC0tIC4=")" 2 "$(bash_payload "Z2l0IGNoZWNrb3V0IC0tIC4=")" "$H/destructive-operation-guard.sh"
+check "block: $(d "Z2l0IGJyYW5jaCAtRCBmZWF0dXJlL3g=")" 2 "$(bash_payload "Z2l0IGJyYW5jaCAtRCBmZWF0dXJlL3g=")" "$H/destructive-operation-guard.sh"
+check "block: $(d "ZmluZCAuIC1uYW1lICcqLm1kJyAtZGVsZXRl")" 2 "$(bash_payload "ZmluZCAuIC1uYW1lICcqLm1kJyAtZGVsZXRl")" "$H/destructive-operation-guard.sh"
+check "block: $(d "Y2htb2QgLVIgNzc3IC8=")" 2 "$(bash_payload "Y2htb2QgLVIgNzc3IC8=")" "$H/destructive-operation-guard.sh"
+check "block: $(d "ZGQgaWY9L2Rldi96ZXJvIG9mPS9kZXYvZGlzazI=")" 2 "$(bash_payload "ZGQgaWY9L2Rldi96ZXJvIG9mPS9kZXYvZGlzazI=")" "$H/destructive-operation-guard.sh"
+
+check "allow: $(d "Z2l0IHN0YXR1cw==")" 0 "$(bash_payload "Z2l0IHN0YXR1cw==")" "$H/destructive-operation-guard.sh"
+check "allow: $(d "Z2l0IGxvZyAtLW9uZWxpbmU=")" 0 "$(bash_payload "Z2l0IGxvZyAtLW9uZWxpbmU=")" "$H/destructive-operation-guard.sh"
+check "allow: $(d "Z3JlcCAtcm4gVE9ETyAu")" 0 "$(bash_payload "Z3JlcCAtcm4gVE9ETyAu")" "$H/destructive-operation-guard.sh"
+check "allow: $(d "cm0gL3RtcC9vbmVmaWxlLnR4dA==")" 0 "$(bash_payload "cm0gL3RtcC9vbmVmaWxlLnR4dA==")" "$H/destructive-operation-guard.sh"
+check "allow: $(d "bnBtIHJ1biBidWlsZA==")" 0 "$(bash_payload "bnBtIHJ1biBidWlsZA==")" "$H/destructive-operation-guard.sh"
+check "allow: $(d "Z2l0IGRpZmYgLS1zdGF0")" 0 "$(bash_payload "Z2l0IGRpZmYgLS1zdGF0")" "$H/destructive-operation-guard.sh"
+check "allow: $(d "YmFzaCBzY3JpcHRzL3ZhbGlkYXRlLXdvcmtzcGFjZQ==")" 0 "$(bash_payload "YmFzaCBzY3JpcHRzL3ZhbGlkYXRlLXdvcmtzcGFjZQ==")" "$H/destructive-operation-guard.sh"
+check "FAIL-CLOSED: empty stdin" 2 "" "$H/destructive-operation-guard.sh"
+
+echo
+echo "prd-change-guard - NOTIFY on prd paths, silent elsewhere"
+notify_check "notify: outputs/f/prd/f-prd.md" '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"outputs/f/prd/f-prd.md"}}' yes
+notify_check "notify: outputs/f/prd/nested-prd.md" '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"outputs/f/prd/nested-prd.md"}}' yes
+notify_check "silent: outputs/f/spec/f-spec.md" '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"outputs/f/spec/f-spec.md"}}' no
+notify_check "silent: retired domains/d/features/f/prd.md" '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"domains/d/features/f/prd.md"}}' no
+
+echo
+echo "provenance-guard - BLOCK (2) untagged evidence, PASS (0) tagged"
+PVDIR="$(mktemp -d)/second-brain/hypotheses"; mkdir -p "$PVDIR"
+pv_payload() { jq -nc --arg p "$1" '{hook_event_name:"PostToolUse",tool_name:"Write",tool_input:{file_path:$p}}'; }
+
+cat > "$PVDIR/tagged.md" <<'PVEOF'
+### Tagged — 2026-08-27
+- **Evidence for:**
+  - Three leads asked for weekly default  [documented] `source/x.md`
+  - Naomi confirmed priority  [verbal] Naomi, 2026-05-13
+  - Friction reduces conversion  [industry]
+- **Evidence against:**
+  - _(none yet)_
+- **Open questions:**
+  - Untagged commentary is legal here
+PVEOF
+
+cat > "$PVDIR/untagged.md" <<'PVEOF'
+### Untagged — 2026-08-27
+- **Evidence for:**
+  - Acme ops lead stopped acting on notifications
+PVEOF
+
+cat > "$PVDIR/emptystate.md" <<'PVEOF'
+### Empty state — 2026-08-27
+- **Evidence for:** none yet — pure naming-convention assumption.
+- **Evidence against:** <with provenance tags>
+PVEOF
+
+cat > "$PVDIR/_SCHEMA.md" <<'PVEOF'
+### Template — the schema itself must never be gated
+- **Evidence for:**
+  - <claim>  <provenance-tag>
+PVEOF
+
+check "pass: every evidence row tagged" 0 "$(pv_payload "$PVDIR/tagged.md")" "$H/provenance-guard.sh"
+check "BLOCK: evidence row with no tag" 2 "$(pv_payload "$PVDIR/untagged.md")" "$H/provenance-guard.sh"
+check "pass: empty-state and placeholder rows" 0 "$(pv_payload "$PVDIR/emptystate.md")" "$H/provenance-guard.sh"
+check "pass: _SCHEMA.md exempt" 0 "$(pv_payload "$PVDIR/_SCHEMA.md")" "$H/provenance-guard.sh"
+check "pass: file outside second-brain ignored" 0 '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"README.md"}}' "$H/provenance-guard.sh"
+
+# The org brain is a separate tree; it carries the same provenance discipline.
+OBDIR="$(mktemp -d)/org-brain/decisions"; mkdir -p "$OBDIR"
+cp "$PVDIR/untagged.md" "$OBDIR/untagged.md"
+cp "$PVDIR/tagged.md" "$OBDIR/tagged.md"
+check "BLOCK: untagged row in org-brain/decisions" 2 "$(pv_payload "$OBDIR/untagged.md")" "$H/provenance-guard.sh"
+check "pass: tagged row in org-brain/decisions" 0 "$(pv_payload "$OBDIR/tagged.md")" "$H/provenance-guard.sh"
+rm -rf "$(dirname "$(dirname "$OBDIR")")"
+rm -rf "$(dirname "$(dirname "$PVDIR")")"
+
+echo
+echo "settings.json - must not reference nonexistent TOOL_INPUT_* env vars"
+if grep -q "TOOL_INPUT_" .claude/settings.json 2>/dev/null; then
+  echo "  FAIL  settings.json still uses TOOL_INPUT_* (never set by Claude Code)"; fail=$((fail+1))
+else
+  echo "  PASS  settings.json uses the stdin payload contract"; pass=$((pass+1))
+fi
+
+echo
+echo "----- $pass passed, $fail failed -----"
+[[ "$fail" -eq 0 ]] || exit 1

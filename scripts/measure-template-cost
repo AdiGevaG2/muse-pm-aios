@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Reports how much of each template is unconditional cost vs. the conditional
+# AI sections that get deleted for deterministic features. Use before changing
+# a token budget in validate-workspace, so the number is measured, not guessed.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+python3 - <<'PY'
+import pathlib
+
+def span(text, start_marker, end_marker):
+    try:
+        s = text.index(start_marker); e = text.index(end_marker, s)
+        return e - s
+    except ValueError:
+        return 0
+
+targets = [
+    (".claude/skills/prd/references/prd-template.md",
+     [("##### **Model-Quality Metric:", "### Required Events / Signals"),
+      ("## AI Behavior and Acceptance", "## Risks and Mitigations")]),
+    (".claude/skills/spec/references/spec-template.md",
+     [("## AI Behavior Contract", "## Error / Empty / Loading States")]),
+    (".claude/skills/discovery/references/discovery-template.md",
+     [("### Solution Nature:", "### Feature Behavior")]),
+]
+
+print(f"{'template':<58}{'total':>8}{'AI':>8}{'det.':>8}  (tokens)")
+for path, spans in targets:
+    p = pathlib.Path(path)
+    if not p.exists():
+        print(f"{path:<58}{'MISSING':>8}"); continue
+    t = p.read_text()
+    ai = sum(span(t, a, b) for a, b in spans)
+    total = len(t)
+    print(f"{path:<58}{total//4:>8}{ai//4:>8}{(total-ai)//4:>8}")
+print()
+print("det. = cost for a deterministic feature, with the AI sections deleted.")
+PY

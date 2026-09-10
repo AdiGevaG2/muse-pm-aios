@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Reports what is still a stub and which AI features lack the artifacts that
+# make them shippable. Advisory by default: it tells the truth about the
+# workspace rather than gating on it.
+#
+#   bash scripts/validate-ai-readiness            # report
+#   bash scripts/validate-ai-readiness --strict   # exit 1 if any BLOCKER
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+
+STRICT=0
+[[ "${1:-}" == "--strict" ]] && STRICT=1
+
+blockers=0; warns=0; oks=0
+B() { printf '  BLOCKER  %s\n' "$1"; blockers=$((blockers+1)); }
+W() { printf '  WARN     %s\n' "$1"; warns=$((warns+1)); }
+K() { printf '  OK       %s\n' "$1"; oks=$((oks+1)); }
+
+# A file is a stub if it is short AND still carries an unfilled marker.
+is_stub() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  local lines; lines=$(wc -l < "$f" | tr -d ' ')
+  if [[ "$lines" -lt 15 ]] && grep -qE '_\(add:|<[a-z][^>]*>|TODO|TBD' "$f"; then return 0; fi
+  return 1
+}
+
+# Governance is a REFERENCE, not a to-do list. A row is filled when a real
+# decision needs it, so a mostly-TBD file is a normal steady state, not a
+# failure. This reports the count and stays quiet; the escalation that matters
+# happens in the AI-feature check below, where an unanswered row actually
+# blocks something. Only a genuinely empty stub is a blocker.
+echo "=== Governance context (human-owned; fill a row when a decision needs it) ==="
+for f in org-brain/context/policies.md \
+         domains/greenlight/second-brain/context/compliance.md; do
+  if [[ ! -f "$f" ]]; then
+    B "$f missing"
+  elif is_stub "$f"; then
+    B "$f is an empty stub — no structure to fill in"
+  else
+    tbd=$(grep -c 'TBD' "$f" 2>/dev/null); tbd=${tbd:-0}
+    active=$(grep -c '| ACTIVE |' "$f" 2>/dev/null); active=${active:-0}
+    recorded=$(grep -c '| RECORDED |' "$f" 2>/dev/null); recorded=${recorded:-0}
+    if [[ "$tbd" -eq 0 ]]; then
+      K "$f fully answered"
+    else
+      K "$f: $active in force, $recorded recorded, $tbd not yet needed"
+    fi
+  fi
+done
+
+echo
+echo "=== Voice and style (drives output quality) ==="
+for f in domains/greenlight/second-brain/writing-samples.md \
+         domains/greenlight/second-brain/style-guide.md; do
+  if [[ ! -f "$f" ]]; then W "$f missing"
+  elif is_stub "$f"; then W "$f is still a stub"
+  else K "$f populated"; fi
+done
+
+echo
+echo "=== Compounding loops (an empty brain means every feature starts at zero) ==="
+for s in ingest retro review; do
+  [[ -f ".claude/skills/$s/SKILL.md" ]] && K "/$s is active" \
+    || W "/$s is not active — knowledge cannot compound without it"
+done
+idx="domains/greenlight/second-brain/ingestion/index.md"
+if [[ -f "$idx" ]] && grep -q "_(none yet)_" "$idx"; then
+  W "wiki is empty — run /ingest as you read, or the brain stays a scaffold"
+else
+  K "wiki has content"
+fi
+for d in decisions stakeholders hypotheses glossary; do
+  f="domains/greenlight/second-brain/$d/README.md"
+  if [[ -f "$f" ]] && [[ "$(grep -cE '^###? ' "$f")" -le 2 ]]; then
+    W "second-brain/$d/ holds only its template — no real entries yet"
+  fi
+done
+
+echo
+echo "=== Integration readiness (config metadata is not a working connection) ==="
+cfg="domains/greenlight/config.json"
+if [[ -f "$cfg" ]] && command -v jq >/dev/null 2>&1; then
+  while IFS=$'\t' read -r tool state; do
+    case "$state" in
+      UNVERIFIED)    W "$tool: UNVERIFIED — no runtime probe has succeeded" ;;
+      NOT_CONNECTED) W "$tool: NOT_CONNECTED — no MCP server available; see the setup path in config.json" ;;
+      *)             K "$tool: $state" ;;
+    esac
+  done < <(jq -r '.tools | to_entries[] | "\(.key)\t\(.value.readiness // "unset")"' "$cfg")
+else
+  W "cannot read $cfg (missing file or jq)"
+fi
+
+echo
+echo "----- $oks ok, $warns warnings, $blockers blockers -----"
+if [[ "$blockers" -gt 0 ]]; then
+  echo "Blockers are governance gaps: real product work should not proceed on unwritten policy."
+  [[ "$STRICT" -eq 1 ]] && exit 1
+fi
+exit 0

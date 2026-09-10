@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+errors=0
+warnings=0
+
+require_file() {
+  local path="$1"
+  if [[ ! -f "$repo_root/$path" ]]; then
+    echo "missing: $path" >&2
+    errors=$((errors + 1))
+  fi
+}
+
+require_file "CLAUDE.md"
+require_file ".claude/CLAUDE.md"
+require_file "AGENTS.md"
+require_file "domains/greenlight/CLAUDE.md"
+require_file "domains/greenlight/INDEX.md"
+require_file "scripts/verify-scope"
+
+warn_token_budget() {
+  local path="$1"
+  local budget="$2"
+  local label="$3"
+  local bytes
+  local tokens
+
+  [[ -f "$repo_root/$path" ]] || return
+  bytes="$(wc -c < "$repo_root/$path")"
+  tokens=$(((bytes + 3) / 4))
+  if (( tokens > budget )); then
+    echo "warning: $label exceeds token budget: $path (~$tokens > $budget)" >&2
+    warnings=$((warnings + 1))
+  fi
+}
+
+expected_skills="ai-eval
+analytics-plan
+baseline-data
+critique
+discovery
+ingest
+learn-feature
+mini-prd
+prd
+publish
+retro
+reverse-engineer
+review
+setup
+spec
+validation
+weekly-update
+wireframer"
+actual_skills="$(find "$repo_root/.claude/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -print | sed 's#.*/skills/##; s#/SKILL.md##' | sort)"
+if [[ "$actual_skills" != "$expected_skills" ]]; then
+  echo "active skill set drifted; expected:" >&2
+  echo "$expected_skills" >&2
+  echo "actual:" >&2
+  echo "$actual_skills" >&2
+  errors=$((errors + 1))
+fi
+
+if ! grep -q "canonical Claude contract" "$repo_root/.claude/CLAUDE.md"; then
+  echo ".claude/CLAUDE.md should stay a thin pointer to ../CLAUDE.md" >&2
+  errors=$((errors + 1))
+fi
+
+for file in "CLAUDE.md" ".claude/CLAUDE.md" "AGENTS.md" "domains/greenlight/CLAUDE.md"; do
+  lines="$(wc -l < "$repo_root/$file")"
+  if (( lines > 140 )); then
+    echo "oversized always-on file: $file ($lines lines)" >&2
+    errors=$((errors + 1))
+  fi
+done
+
+# Warning-only budgets use the portable approximation bytes / 4.
+# 1050: raised from 930 for the "Act, Don't Ask" + "Speed" sections. They are the
+# highest-value rules in the file — they stop the ask-loop that made the engine
+# unusable — and they save far more context than they cost. Context Cost (~97 tok)
+# also stays: it prevents multi-thousand-token tool dumps.
+warn_token_budget "CLAUDE.md" 1050 "root instructions"
+warn_token_budget "AGENTS.md" 300 "Codex contract"
+warn_token_budget "domains/greenlight/CLAUDE.md" 250 "domain instructions"
+warn_token_budget ".claude/skills/prd/SKILL.md" 470 "PRD skill"
+# The draw.io instruction lives in _shared/diagram-drawio.md. Budgets below
+# reflect the adopted canonical templates (richer AC guidance, Mixpanel framing,
+# assumptions table) measured after that deduplication. Run
+# scripts/measure-template-cost before changing.
+warn_token_budget ".claude/skills/prd/references/prd-template.md" 1500 "PRD template"
+warn_token_budget ".claude/skills/discovery/references/discovery-template.md" 1350 "discovery template"
+warn_token_budget ".claude/skills/_shared/diagram-drawio.md" 350 "diagram reference (lazy)"
+warn_token_budget ".claude/skills/validation/references/alignment-report-template.md" 400 "alignment report"
+warn_token_budget ".claude/skills/analytics-plan/references/analytics-plan-template.md" 1800 "analytics plan (lazy)"
+
+max_feature_router_tokens=0
+while IFS= read -r feature_readme; do
+  feature_bytes="$(wc -c < "$feature_readme")"
+  feature_tokens=$(((feature_bytes + 3) / 4))
+  if (( feature_tokens > max_feature_router_tokens )); then
+    max_feature_router_tokens="$feature_tokens"
+  fi
+  if (( feature_tokens > 300 )); then
+    relative_path="${feature_readme#"$repo_root/"}"
+    echo "warning: feature router exceeds token budget: $relative_path (~$feature_tokens > 300)" >&2
+    warnings=$((warnings + 1))
+  fi
+done < <(find "$repo_root/outputs" -mindepth 2 -maxdepth 2 -name 'README.md' -type f -print)
+
+prd_context_tokens=0
+for file in \
+  "CLAUDE.md" \
+  ".claude/CLAUDE.md" \
+  "domains/greenlight/CLAUDE.md" \
+  ".claude/skills/prd/SKILL.md" \
+  ".claude/skills/prd/references/prd-template.md"; do
+  bytes="$(wc -c < "$repo_root/$file")"
+  prd_context_tokens=$((prd_context_tokens + ((bytes + 3) / 4)))
+done
+prd_context_tokens=$((prd_context_tokens + max_feature_router_tokens))
+if (( prd_context_tokens > 4100 )); then
+  echo "warning: simple PRD required-read path exceeds token budget: ~$prd_context_tokens > 4100" >&2
+  warnings=$((warnings + 1))
+fi
+
+if grep -RE 'load BOTH brains|Load `org-brain/` then `domains/<domain>/second-brain/`' "$repo_root/CLAUDE.md" "$repo_root/.claude/CLAUDE.md" "$repo_root/domains/greenlight/CLAUDE.md" >/dev/null 2>&1; then
+  echo "broad brain-loading rule remains in always-on instructions" >&2
+  errors=$((errors + 1))
+fi
+
+if grep -RE 'load BOTH brains|Load `org-brain/` then `domains/<domain>/second-brain/`|/feature-flow' "$repo_root/.claude/skills" >/dev/null 2>&1; then
+  echo "old broad pipeline/loading rule remains in active skills" >&2
+  errors=$((errors + 1))
+fi
+
+if grep -RE 'skills/(legacy-analyze|target-platform)/references' "$repo_root/.claude/agents" >/dev/null 2>&1; then
+  echo "stale active agent reference found" >&2
+  errors=$((errors + 1))
+fi
+
+if grep -RE 'Write the completed|Auto-applies|Apply the edits|local edits are applied' "$repo_root/.claude/agents" >/dev/null 2>&1; then
+  echo "read-only agent promises file writes" >&2
+  errors=$((errors + 1))
+fi
+
+if grep -Eiq 'may call the `verify` agent|can call the verify agent' "$repo_root/.claude/agents/spec-reconciler.md"; then
+  echo "spec-reconciler promises unavailable agent invocation" >&2
+  errors=$((errors + 1))
+fi
+
+for integration in mixpanel coralogix jira confluence figma looker github; do
+  if ! awk -v name="$integration" '
+    $0 ~ "\\\"" name "\\\"[[:space:]]*:" { in_integration = 1; next }
+    in_integration && /"readiness"[[:space:]]*:[[:space:]]*"(NOT_CONNECTED|UNVERIFIED|VERIFIED_READ|VERIFIED_WRITE)"/ { found = 1; exit }
+    in_integration && /^[[:space:]]{4}"[a-z]+"[[:space:]]*:/ { exit }
+    END { exit(found ? 0 : 1) }
+  ' "$repo_root/domains/greenlight/config.json"; then
+    echo "missing or invalid readiness label: $integration" >&2
+    errors=$((errors + 1))
+  fi
+done
+
+if (( errors > 0 )); then
+  exit 1
+fi
+
+if (( warnings > 0 )); then
+  echo "validate-workspace: OK ($warnings warning(s))"
+else
+  echo "validate-workspace: OK"
+fi
